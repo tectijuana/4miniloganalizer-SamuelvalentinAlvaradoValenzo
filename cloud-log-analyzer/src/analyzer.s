@@ -7,6 +7,8 @@
 // Entrada     : stdin — un código HTTP por línea
 // Salida      : stdout — código con mayor frecuencia y conteo
 //
+//Nombre: Samuel Valentin Alvarado Valenzo
+//
 // Uso:
 //   cat data/logs_B.txt | ./analyzer
 //
