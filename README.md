@@ -105,6 +105,7 @@ cloud-log-analyzer/
 ├── src/
 │   └── analyzer.s       # Código fuente ARM64
 ├── data/
+│   ├── MOCK_DATA.txt    # Los 1000 datos generados con Mockaroo
 │   ├── logs_A.txt       # Datos de prueba variante A
 │   ├── logs_B.txt       # Datos de prueba variante B
 │   └── ...
