@@ -206,7 +206,7 @@ make clean && make
 ### Ejecución con archivo de 1000 líneas
 
 ```bash
-cat data/logs_B.txt | ./analyzer
+cat data/MOCK_DATA.txt | ./analyzer
 ```
 
 ### Suite de pruebas
@@ -239,6 +239,8 @@ make
 
 # Ejecutar con archivo por defecto (logs_B.txt)
 bash run.sh
+
+# O tambien con el archivo de los 1000 datos (MOCK_DATA.txt)
 
 # Ejecutar con cualquier archivo
 bash run.sh data/logs_A.txt
