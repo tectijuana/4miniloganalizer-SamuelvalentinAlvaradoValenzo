@@ -1,167 +1,250 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/EbtZGzoI)
-[![Open in Codespaces](https://classroom.github.com/assets/launch-codespace-2972f46106e565e64193e422d61a12cf1da4916b45550586e14ef0a7c637dd04.svg)](https://classroom.github.com/open-in-codespaces?assignment_repo_id=23668602)
+# Mini Cloud Log Analyzer — Variante B
 
-# Práctica 14.3
-
-## Implementación de un Mini Cloud Log Analyzer en ARM64
-
-**Modalidad:** Individual
-**Entorno de trabajo:** AWS Ubuntu ARM64 + GitHub Classroom
-**Lenguaje:** ARM64 Assembly (GNU Assembler) + Bash + GNU Make
+**Autor:** Samuel Valentín Alvarado Valenzo  
+**Materia:** Lenguajes de Interfaz  
+**Institución:** Instituto Tecnológico de Tijuana  
+**Entorno:** AWS Ubuntu 24 ARM64  
 
 ---
 
-## Introducción
+## Descripción
 
-Los sistemas modernos de cómputo en la nube generan continuamente registros (*logs*) que permiten monitorear el estado de servicios, detectar fallas y activar alertas ante eventos críticos.
+Implementación de un analizador de logs HTTP en **ARM64 Assembly puro**, capaz de procesar códigos de estado HTTP desde `stdin` y determinar cuál es el más frecuente, mostrando también el número de veces que aparece.
 
-En esta práctica se desarrollará un módulo simplificado de análisis de logs, implementado en **ARM64 Assembly**, inspirado en tareas reales de monitoreo utilizadas en sistemas cloud, observabilidad y administración de infraestructura.
+```bash
+cat data/logs_B.txt | ./analyzer
+```
 
-El programa procesará códigos de estado HTTP suministrados mediante entrada estándar (stdin):
-
-```bash id="y1gcmc"
-cat logs.txt | ./analyzer
+Salida esperada:
+```
+================================
+  Mini Cloud Log Analyzer
+  Variante B - Mas frecuente
+================================
+Codigo mas frecuente : 404 (aparece 5 veces)
+================================
 ```
 
 ---
 
-## Objetivo general
+## Objetivo
 
-Diseñar e implementar, en lenguaje ensamblador ARM64, una solución para procesar registros de eventos y detectar condiciones definidas según la variante asignada.
-
----
-
-## Objetivos específicos
-
-El estudiante aplicará:
-
-* programación en ARM64 bajo Linux
-* manejo de registros
-* direccionamiento y acceso a memoria
-* instrucciones de comparación
-* estructuras iterativas en ensamblador
-* saltos condicionales
-* uso de syscalls Linux
-* compilación con GNU Make
-* control de versiones con GitHub Classroom
-
-Estos temas se alinean con contenidos clásicos de flujo de control, herramientas GNU, manejo de datos y convenciones de programación en ensamblador.   
+Demostrar cómo un problema de procesamiento de datos puede resolverse directamente a nivel de arquitectura, utilizando instrucciones ARM64, manejo de registros, acceso a memoria y syscalls de Linux — sin depender de ningún lenguaje de alto nivel.
 
 ---
 
-## Material proporcionado
+## Tecnologías
 
-Se entregará un repositorio preconfigurado que contiene:
-
-* plantilla base en ARM64
-* archivo `Makefile`
-* script Bash de ejecución
-* archivo de datos (`logs.txt`)
-* pruebas iniciales
-* secciones marcadas con `TODO`
-
-El estudiante deberá completar la lógica correspondiente.
+- **ARM64 Assembly** (AArch64) — GNU Assembler (GAS)
+- **Linux syscalls** — `read`, `write`, `exit`
+- **GNU Binutils** — `as`, `ld`
+- **GNU Make**
+- **AWS Ubuntu 24 ARM64**
 
 ---
 
-## Variantes de la práctica
+## 1. Introducción
 
-### Variante A
+### ¿Qué es ARM64?
 
-Contabilizar:
+ARM64 (también llamado AArch64) es la arquitectura de 64 bits de los procesadores ARM. Es la arquitectura base de dispositivos móviles, servidores en la nube (AWS Graviton), Apple Silicon y sistemas embebidos modernos. A diferencia de x86, ARM sigue un diseño RISC (Reduced Instruction Set Computer): pocas instrucciones simples, muchos registros de propósito general.
 
-* respuestas exitosas (2xx)
-* errores del cliente (4xx)
-* errores del servidor (5xx)
+### ¿Por qué usar Assembly?
 
----
+El ensamblador permite entender cómo funciona la computadora a nivel de registros y memoria. Cada instrucción escrita corresponde directamente a una operación del procesador: no hay compilador que interprete, no hay runtime que gestione memoria. Esto es útil para:
 
-### Variante B
-
-Determinar el código de estado más frecuente.
+- Entender el modelo de ejecución real de un programa
+- Optimizar rutinas críticas en rendimiento
+- Comprender cómo los lenguajes de alto nivel se traducen a instrucciones de máquina
 
 ---
 
-### Variante C
+## 2. Marco Teórico
 
-Detectar el primer evento crítico (503).
+### Arquitectura ARM64
+
+ARM64 opera con un modelo de carga/almacenamiento: las operaciones aritméticas solo trabajan con registros, y se usan instrucciones dedicadas (`ldr`, `str`) para acceder a memoria.
+
+### Registros principales usados
+
+| Registro | Uso en este proyecto |
+|----------|----------------------|
+| `x0–x2`  | Argumentos de syscall |
+| `x8`     | Número de syscall |
+| `x9–x15` | Variables temporales (parsing, conversión) |
+| `x19`    | Iterador en búsqueda del máximo |
+| `x20`    | Código HTTP ganador |
+| `x21`    | Conteo máximo encontrado |
+| `x22`    | Base de la tabla `counts` |
+| `x25–x27`| Conversión de conteo a ASCII |
+
+### Syscalls Linux ARM64 utilizadas
+
+| Syscall | Número | Uso |
+|---------|--------|-----|
+| `read`  | 63     | Leer bloques de stdin |
+| `write` | 64     | Escribir resultado en stdout |
+| `exit`  | 93     | Terminar el proceso |
+
+### ABI (Application Binary Interface)
+
+En ARM64 (AAPCS64):
+- Los argumentos de funciones van en `x0–x7`
+- El valor de retorno va en `x0`
+- El stack debe estar **alineado a 16 bytes** en todo momento
+- Los registros `x19–x28` son callee-saved (deben preservarse)
 
 ---
 
-### Variante D
+## 3. Desarrollo
 
-Detectar tres errores consecutivos.
+### Estructura del proyecto
 
----
-
-### Variante E
-
-Calcular índice de salud:
-
-```text id="2u4vvx"
-Health Score = 100 - (errores × 10)
+```
+cloud-log-analyzer/
+├── src/
+│   └── analyzer.s       # Código fuente ARM64
+├── data/
+│   ├── logs_A.txt       # Datos de prueba variante A
+│   ├── logs_B.txt       # Datos de prueba variante B
+│   └── ...
+├── tests/
+│   └── test.sh          # Suite de pruebas automáticas
+├── Makefile             # Sistema de compilación
+└── run.sh               # Script de ejecución
 ```
 
----
+### Explicación del archivo `src/analyzer.s`
 
-## Compilación
+El programa se divide en 4 secciones y 3 fases de ejecución:
 
-```bash id="bmubtb"
+**Secciones:**
+
+- `.rodata` — mensajes de texto para stdout
+- `.bss` — tabla de conteos `counts[1000]` y buffer de lectura
+- `.text` — código ejecutable
+
+**Fase 1 — Lectura y conteo:**  
+Se lee stdin en bloques de 4096 bytes y se procesa byte a byte. Se acumulan dígitos hasta encontrar `\n`. Cuando se completan exactamente 3 dígitos en rango 100–599, se incrementa `counts[código]`. El acceso es O(1) porque el índice del array ES el código HTTP.
+
+**Fase 2 — Búsqueda del máximo:**  
+Se itera `counts[100]` hasta `counts[599]` buscando el mayor valor. En caso de empate gana el código de menor valor numérico.
+
+**Fase 3 — Salida:**  
+Se convierte el código ganador (entero) a 3 dígitos ASCII mediante división y módulo. El conteo se convierte con división repetida más inversión de dígitos. Todo se escribe en stdout con la syscall `write`.
+
+### Compilación
+
+```bash
 make
 ```
 
+El `Makefile` detecta automáticamente la arquitectura:
+- En **ARM64**: usa `as` + `ld` nativos
+- En **x86_64**: usa `clang` con target `aarch64-linux-gnu`
+
 ---
 
-## Ejecución
+## 4. Resultados
 
-```bash id="gcqlf2"
-cat logs.txt | ./analyzer
+### Pruebas con `logs_B.txt` (1000 líneas)
+
+```
+================================
+  Mini Cloud Log Analyzer
+  Variante B - Mas frecuente
+================================
+Codigo mas frecuente : 404 (aparece X veces)
+================================
+```
+
+### Tabla de pruebas
+
+| Entrada | Esperado | Resultado |
+|---------|----------|-----------|
+| `logs_B.txt` | Código más frecuente | ✅ Correcto |
+| Un solo código `503` | `503 (aparece 1 veces)` | ✅ Correcto |
+| Entrada vacía | Sin códigos válidos | ✅ Correcto |
+| Líneas inválidas mezcladas | Ignora inválidas | ✅ Correcto |
+
+---
+
+## 5. Análisis
+
+- **Acceso O(1):** usar el código HTTP directamente como índice del array elimina cualquier búsqueda lineal durante el conteo.
+- **Lectura por bloques:** leer 4096 bytes por syscall reduce el número de llamadas al sistema comparado con leer línea por línea.
+- **Sin dependencias:** el binario resultante solo depende del kernel de Linux, sin libc ni runtime.
+- **Alineación de stack:** ARM64 exige alineación a 16 bytes; ignorarlo produce Bus Error, como se comprobó durante el desarrollo.
+
+---
+
+## 6. Conclusiones
+
+- El ensamblador ARM64 obliga a pensar en cada detalle: qué registro guarda qué valor, cómo se alinea el stack, cuándo se sobreescriben registros.
+- Problemas como "el conteo siempre da 1" se originaron en que `read` leía todo el archivo pero solo se procesaban los primeros bytes — algo invisible en un lenguaje de alto nivel.
+- Para tareas de procesamiento de texto simple, ARM64 Assembly es viable y eficiente, pero requiere disciplina en el manejo de registros.
+
+---
+
+## 7. Autorreflexión
+
+- Mejoraría el manejo de errores: actualmente líneas malformadas se ignoran silenciosamente.
+- Agregaría soporte para mostrar el top 3 de códigos más frecuentes.
+- La conversión de entero a ASCII podría encapsularse como subrutina reutilizable usando `bl` y `ret`.
+
+---
+
+## 8. Evidencias
+
+### Compilación
+
+```bash
+make clean && make
+```
+
+### Ejecución con archivo de 1000 líneas
+
+```bash
+cat data/logs_B.txt | ./analyzer
+```
+
+### Suite de pruebas
+
+```bash
+make test
+```
+
+### Git log
+
+```bash
+git log --oneline
 ```
 
 ---
 
-## Entregables
+## 🎬 Asciinema
 
-Cada estudiante deberá entregar en su repositorio:
+[![Demo asciinema](https://asciinema.org/a/et0yz3obYbIdvtKM.svg)](https://asciinema.org/a/et0yz3obYbIdvtKM)
 
-* archivo fuente ARM64 funcional
-* solución implementada
-* README explicando diseño y lógica utilizada
-* evidencia de ejecución
-* commits realizados en GitHub Classroom
+> Grabación de terminal mostrando compilación, pruebas y ejecución en AWS ARM64.
 
 ---
 
-## Criterios de evaluación
+## Compilación y uso
 
-| Criterio                    | Ponderación |
-| --------------------------- | ----------- |
-| Compilación correcta        | 20%         |
-| Correctitud de la solución  | 35%         |
-| Uso adecuado de ARM64       | 25%         |
-| Documentación y comentarios | 10%         |
-| Evidencia de pruebas        | 10%         |
+```bash
+# Compilar
+make
 
----
+# Ejecutar con archivo por defecto (logs_B.txt)
+bash run.sh
 
-## Restricciones
+# Ejecutar con cualquier archivo
+bash run.sh data/logs_A.txt
 
-No está permitido:
+# Pruebas automáticas
+make test
 
-* resolver la lógica en C
-* resolver la lógica en Python
-* modificar la variante asignada
-* omitir el uso de ARM64 Assembly
-
----
-
-## Competencia a desarrollar
-
-Comprender cómo un problema de procesamiento de datos es implementado a nivel máquina mediante instrucciones ARM64.
-
----
-
-## Nota
-
-Aunque este problema puede resolverse fácilmente en lenguajes de alto nivel, el propósito de la práctica es implementar **cómo lo resolvería la arquitectura**, no únicamente obtener el resultado.
-
+# Limpiar binarios
+make clean
+```
