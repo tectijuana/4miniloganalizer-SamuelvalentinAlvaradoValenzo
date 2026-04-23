@@ -1,265 +1,423 @@
-/*
-Autor: Equipo docente (base para estudiantes)
-Curso: Arquitectura de Computadoras / Ensamblador ARM64
-Práctica: Mini Cloud Log Analyzer (Bash + ARM64 + GNU Make)
-Fecha: 20 de abril de 2026
-Descripción: Lee códigos HTTP desde stdin (uno por línea), clasifica 2xx/4xx/5xx
-             y muestra un reporte en español usando únicamente syscalls Linux.
-*/
+// ============================================================
+// PRÁCTICA 4.2 — MINI CLOUD LOG ANALYZER
+// ============================================================
+// Variante   : B — Código de estado HTTP más frecuente
+// Arquitectura: ARM64 (AArch64) — GNU Assembler (GAS)
+// Sistema op. : Linux (Ubuntu ARM64)
+// Entrada     : stdin — un código HTTP por línea
+// Salida      : stdout — código con mayor frecuencia y conteo
+//
+//Nombre: Samuel Valentin Alvarado Valenzo
+//
+// Uso:
+//   cat data/logs_B.txt | ./analyzer
+//
+// Compilación:
+//   as -g -o analyzer.o src/analyzer.s
+//   ld -o analyzer analyzer.o
+// ============================================================
 
-/*
-PSEUDOCÓDIGO (guía didáctica)
-1) Inicializar contadores en 0: exitos_2xx, errores_4xx, errores_5xx.
-2) Mientras haya bytes por leer en stdin:
-   2.1) Leer un bloque con syscall read.
-   2.2) Recorrer byte por byte.
-   2.3) Si el byte es dígito, acumular numero_actual = numero_actual * 10 + dígito.
-   2.4) Si el byte es '\n', clasificar numero_actual y reiniciar acumulador.
-3) Si el flujo termina sin '\n' final y hay número pendiente, clasificarlo.
-4) Imprimir resultados en español con syscall write.
-5) Salir con código 0.
 
-TODO (extensión para estudiantes):
-- Agregar manejo de códigos no válidos y contarlos.
-- Implementar variantes B, C, D y E en ramas separadas.
-- Mostrar porcentaje de éxito respecto al total.
-*/
+// ============================================================
+// SECCIÓN 1 — CONSTANTES DEL SISTEMA
+// ============================================================
+// Números de syscall para Linux ARM64 (AArch64).
+// Se invocan con la instrucción svc #0
+// El número de syscall va en el registro x8.
+// ============================================================
 
-.equ SYS_read,   63
-.equ SYS_write,  64
-.equ SYS_exit,   93
-.equ STDIN_FD,    0
-.equ STDOUT_FD,   1
+.equ SYS_READ,   63          // leer bytes desde un descriptor
+.equ SYS_WRITE,  64          // escribir bytes a un descriptor
+.equ SYS_EXIT,   93          // terminar el proceso
+
+.equ STDIN,       0          // descriptor: entrada estándar
+.equ STDOUT,      1          // descriptor: salida estándar
+
+.equ BUF_SIZE,  4096         // buffer grande para leer bloques
+
+
+// ============================================================
+// SECCIÓN 2 — DATOS DE SÓLO LECTURA (.rodata)
+// ============================================================
+
+.section .rodata
+
+msg_header:
+    .ascii  "================================\n"
+    .ascii  "  Mini Cloud Log Analyzer\n"
+    .ascii  "  Variante B - Mas frecuente\n"
+    .ascii  "================================\n"
+msg_header_len = . - msg_header
+
+msg_code:
+    .ascii  "Codigo mas frecuente : "
+msg_code_len = . - msg_code
+
+msg_aparece:
+    .ascii  " (aparece "
+msg_aparece_len = . - msg_aparece
+
+msg_veces:
+    .ascii  " veces)\n"
+msg_veces_len = . - msg_veces
+
+msg_footer:
+    .ascii  "================================\n"
+msg_footer_len = . - msg_footer
+
+msg_none:
+    .ascii  "Sin codigos validos en la entrada.\n"
+msg_none_len = . - msg_none
+
+
+// ============================================================
+// SECCIÓN 3 — DATOS NO INICIALIZADOS (.bss)
+// ============================================================
+// counts[1000]: array indexado por código HTTP (100-599).
+//   El índice ES el código → acceso O(1).
+//   El SO garantiza que inicia en cero.
+// buf[BUF_SIZE]: buffer de lectura de stdin.
+// ============================================================
 
 .section .bss
-    .align 4
-buffer:         .skip 4096
-num_buf:        .skip 32      // Buffer para imprimir enteros en texto
 
-.section .data
-msg_titulo:         .asciz "=== Mini Cloud Log Analyzer ===\n"
-msg_2xx:            .asciz "Éxitos 2xx: "
-msg_4xx:            .asciz "Errores 4xx: "
-msg_5xx:            .asciz "Errores 5xx: "
-msg_fin_linea:      .asciz "\n"
+counts:  .skip  1000 * 8
+buf:     .skip  BUF_SIZE
+
+
+// ============================================================
+// SECCIÓN 4 — CÓDIGO EJECUTABLE (.text)
+// ============================================================
 
 .section .text
 .global _start
 
+
+// ============================================================
+// _start — punto de entrada del programa
+// ============================================================
+// Flujo:
+//   1. Leer bloques de stdin → procesar byte a byte
+//   2. Acumular dígitos por línea → cuando llega '\n' o EOF
+//      convertir y contar el código
+//   3. Buscar el índice con mayor conteo
+//   4. Imprimir resultado formateado
+// ============================================================
+
 _start:
-    // Contadores principales
-    mov x19, #0                  // exitos_2xx
-    mov x20, #0                  // errores_4xx
-    mov x21, #0                  // errores_5xx
 
-    // Estado del parser
-    mov x22, #0                  // numero_actual
-    mov x23, #0                  // tiene_digitos (0/1)
+// ------------------------------------------------------------
+// FASE 1 — LECTURA Y CONTEO
+// ------------------------------------------------------------
+// Se lee stdin en bloques de BUF_SIZE bytes.
+// Se itera byte a byte acumulando dígitos.
+// Cuando se encuentra '\n' o fin de buffer se procesa
+// la línea acumulada.
+//
+// Registros usados:
+//   x19 — bytes leídos en el bloque actual
+//   x20 — índice del byte actual en el buffer
+//   x21 — acumulador de dígitos de la línea actual
+//   x22 — cantidad de dígitos acumulados
+//   x23 — byte actual leído
+//   x24 — puntero base al buffer
+// ------------------------------------------------------------
 
-leer_bloque:
-    // read(STDIN_FD, buffer, 4096)
-    mov x0, #STDIN_FD
-    adrp x1, buffer
-    add x1, x1, :lo12:buffer
-    mov x2, #4096
-    mov x8, #SYS_read
-    svc #0
+    // Inicializar acumuladores de línea
+    mov     x21, #0                // acumulador de valor
+    mov     x22, #0                // contador de dígitos
+
+read_block:
+    // -- syscall read(STDIN, buf, BUF_SIZE) ------------------
+    mov     x0, #STDIN
+    adr     x1, buf
+    mov     x2, #BUF_SIZE
+    mov     x8, #SYS_READ
+    svc     #0
 
     // x0 = bytes leídos
-    cmp x0, #0
-    beq fin_lectura               // EOF
-    blt salida_error              // error de lectura
+    cmp     x0, #0
+    ble     flush_last             // EOF → procesar última línea
 
-    mov x24, #0                   // índice i = 0
-    mov x25, x0                   // total bytes en bloque
+    mov     x19, x0               // x19 = bytes leídos
+    mov     x20, #0               // x20 = índice en buffer
+    adr     x24, buf              // x24 = base del buffer
 
-procesar_byte:
-    cmp x24, x25
-    b.ge leer_bloque
+byte_loop:
+    cmp     x20, x19
+    bge     read_block             // procesamos todo el bloque
 
-    adrp x1, buffer
-    add x1, x1, :lo12:buffer
-    ldrb w26, [x1, x24]
-    add x24, x24, #1
+    // Leer byte actual
+    ldrb    w23, [x24, x20]
+    add     x20, x20, #1
 
-    // Si es salto de línea, clasificar número actual
-    cmp w26, #10                  // '\n'
-    b.eq fin_numero
+    // ¿Es salto de línea o retorno de carro?
+    cmp     w23, #'\n'
+    beq     process_line
+    cmp     w23, #'\r'
+    beq     process_line
 
-    // Si es dígito ('0'..'9'), acumular
-    cmp w26, #'0'
-    b.lt procesar_byte
-    cmp w26, #'9'
-    b.gt procesar_byte
+    // ¿Es dígito ASCII '0'–'9'?
+    sub     w23, w23, #'0'
+    cmp     w23, #9
+    bhi     byte_loop              // no es dígito, ignorar
 
-    // numero_actual = numero_actual * 10 + (byte - '0')
-    mov x27, #10
-    mul x22, x22, x27
-    sub w26, w26, #'0'
-    uxtw x26, w26
-    add x22, x22, x26
-    mov x23, #1
-    b procesar_byte
+    // Acumular dígito: valor = valor * 10 + dígito
+    mov     x9, #10
+    mul     x21, x21, x9
+    add     x21, x21, x23
+    add     x22, x22, #1
 
-fin_numero:
-    // Solo clasificar si efectivamente hubo al menos un dígito
-    cbz x23, reiniciar_numero
+    b       byte_loop
 
-    mov x0, x22
-    bl clasificar_codigo
+process_line:
+    // Solo procesar si acumulamos exactamente 3 dígitos
+    cmp     x22, #3
+    bne     reset_line
 
-reiniciar_numero:
-    mov x22, #0
-    mov x23, #0
-    b procesar_byte
+    // Validar rango 100–599
+    cmp     x21, #100
+    blt     reset_line
+    cmp     x21, #599
+    bgt     reset_line
 
-fin_lectura:
-    // EOF con número pendiente (sin '\n' final)
-    cbz x23, imprimir_reporte
-    mov x0, x22
-    bl clasificar_codigo
+    // -- Incrementar counts[código] --------------------------
+    // Dirección = &counts + código × 8
+    adr     x9, counts
+    lsl     x10, x21, #3          // offset = código × 8
+    add     x10, x9, x10          // &counts[código]
+    ldr     x11, [x10]            // valor actual
+    add     x11, x11, #1
+    str     x11, [x10]            // counts[código]++
 
-imprimir_reporte:
-    // Encabezado
-    adrp x0, msg_titulo
-    add x0, x0, :lo12:msg_titulo
-    bl write_cstr
+reset_line:
+    // Reiniciar acumuladores para la siguiente línea
+    mov     x21, #0
+    mov     x22, #0
+    b       byte_loop
 
-    // "Éxitos 2xx: " + valor + "\n"
-    adrp x0, msg_2xx
-    add x0, x0, :lo12:msg_2xx
-    bl write_cstr
-    mov x0, x19
-    bl print_uint
-    adrp x0, msg_fin_linea
-    add x0, x0, :lo12:msg_fin_linea
-    bl write_cstr
+flush_last:
+    // Procesar última línea si no terminó con '\n'
+    cmp     x22, #3
+    bne     find_max
+    cmp     x21, #100
+    blt     find_max
+    cmp     x21, #599
+    bgt     find_max
 
-    // "Errores 4xx: " + valor + "\n"
-    adrp x0, msg_4xx
-    add x0, x0, :lo12:msg_4xx
-    bl write_cstr
-    mov x0, x20
-    bl print_uint
-    adrp x0, msg_fin_linea
-    add x0, x0, :lo12:msg_fin_linea
-    bl write_cstr
+    adr     x9, counts
+    lsl     x10, x21, #3
+    add     x10, x9, x10
+    ldr     x11, [x10]
+    add     x11, x11, #1
+    str     x11, [x10]
 
-    // "Errores 5xx: " + valor + "\n"
-    adrp x0, msg_5xx
-    add x0, x0, :lo12:msg_5xx
-    bl write_cstr
-    mov x0, x21
-    bl print_uint
-    adrp x0, msg_fin_linea
-    add x0, x0, :lo12:msg_fin_linea
-    bl write_cstr
 
-salida_ok:
-    mov x0, #0
-    mov x8, #SYS_exit
-    svc #0
+// ------------------------------------------------------------
+// FASE 2 — BÚSQUEDA DEL CÓDIGO MÁS FRECUENTE
+// ------------------------------------------------------------
+// Itera counts[100..599] y guarda el índice con mayor valor.
+// En empate gana el código de menor valor numérico.
+//
+// Registros usados:
+//   x19 — iterador (100 → 599)
+//   x20 — índice del máximo (0 = ninguno encontrado)
+//   x21 — conteo máximo encontrado
+//   x22 — base de la tabla counts
+//   x23 — offset actual (x19 × 8)
+//   x24 — counts[x19] leído
+// ------------------------------------------------------------
 
-salida_error:
-    mov x0, #1
-    mov x8, #SYS_exit
-    svc #0
+find_max:
+    mov     x19, #100
+    mov     x20, #0
+    mov     x21, #0
+    adr     x22, counts
 
-// -----------------------------------------------------------------------------
-// clasificar_codigo(x0 = codigo_http)
-// Incrementa el contador correspondiente: 2xx, 4xx o 5xx.
-// -----------------------------------------------------------------------------
-clasificar_codigo:
-    cmp x0, #200
-    b.lt clasificar_fin
-    cmp x0, #299
-    b.gt revisar_4xx
-    add x19, x19, #1
-    b clasificar_fin
+find_loop:
+    cmp     x19, #599
+    bgt     find_done
 
-revisar_4xx:
-    cmp x0, #400
-    b.lt clasificar_fin
-    cmp x0, #499
-    b.gt revisar_5xx
-    add x20, x20, #1
-    b clasificar_fin
+    lsl     x23, x19, #3
+    ldr     x24, [x22, x23]
 
-revisar_5xx:
-    cmp x0, #500
-    b.lt clasificar_fin
-    cmp x0, #599
-    b.gt clasificar_fin
-    add x21, x21, #1
+    cmp     x24, x21
+    ble     find_next
 
-clasificar_fin:
-    ret
+    mov     x21, x24               // max_count = counts[x19]
+    mov     x20, x19               // max_code  = x19
 
-// -----------------------------------------------------------------------------
-// write_cstr(x0 = puntero a string terminado en '\0')
-// Imprime una cadena C usando syscall write.
-// -----------------------------------------------------------------------------
-write_cstr:
-    mov x9, x0                    // guardar puntero inicial
-    mov x10, #0                   // longitud = 0
+find_next:
+    add     x19, x19, #1
+    b       find_loop
 
-wc_len_loop:
-    ldrb w11, [x9, x10]
-    cbz w11, wc_len_done
-    add x10, x10, #1
-    b wc_len_loop
+find_done:
+    cmp     x20, #0
+    beq     print_none
 
-wc_len_done:
-    mov x1, x9                    // buffer
-    mov x2, x10                   // tamaño
-    mov x0, #STDOUT_FD            // fd
-    mov x8, #SYS_write
-    svc #0
-    ret
 
-// -----------------------------------------------------------------------------
-// print_uint(x0 = entero sin signo)
-// Convierte a ASCII en base 10 e imprime con syscall write.
-// -----------------------------------------------------------------------------
-print_uint:
-    // Caso especial: número 0
-    cbnz x0, pu_convertir
-    adrp x1, num_buf
-    add x1, x1, :lo12:num_buf
-    mov w2, #'0'
-    strb w2, [x1]
-    mov x0, #STDOUT_FD
-    mov x2, #1
-    mov x8, #SYS_write
-    svc #0
-    ret
+// ------------------------------------------------------------
+// FASE 3 — IMPRIMIR RESULTADO
+// ------------------------------------------------------------
+// x20 = código ganador
+// x21 = conteo del ganador
+//
+// Conversión int → ASCII:
+//   Código  : 3 dígitos fijos (centenas, decenas, unidades)
+//   Conteo  : dígitos variables con división repetida + inversión
+//
+// Registros usados:
+//   x9–x14 — conversión del código
+//   x15    — puntero al stack para dígitos del conteo
+//   x25    — contador de dígitos del conteo
+//   x26    — índice izquierdo para inversión
+//   x27    — índice derecho para inversión
+// ------------------------------------------------------------
 
-pu_convertir:
-    adrp x12, num_buf
-    add x12, x12, :lo12:num_buf
-    add x12, x12, #31             // escribir de atrás hacia adelante
-    mov w13, #0
-    strb w13, [x12]               // terminador no indispensable, útil para depurar
+print_result:
 
-    mov x14, #10
-    mov x15, #0                   // contador de dígitos
+    // -- Header ----------------------------------------------
+    mov     x0, #STDOUT
+    adr     x1, msg_header
+    mov     x2, #(msg_header_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
 
-pu_loop:
-    udiv x16, x0, x14             // x16 = x0 / 10
-    msub x17, x16, x14, x0        // x17 = x0 - (x16*10) => residuo
-    add x17, x17, #'0'
+    // -- "Codigo mas frecuente : " ---------------------------
+    mov     x0, #STDOUT
+    adr     x1, msg_code
+    mov     x2, #(msg_code_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
 
-    sub x12, x12, #1
-    strb w17, [x12]
-    add x15, x15, #1
+    // -- Convertir código (x20) → 3 dígitos ASCII ------------
+    // Stack alineado a 16 bytes (requisito ARM64)
+    sub     sp, sp, #16
 
-    mov x0, x16
-    cbnz x0, pu_loop
+    mov     x9,  x20
+    mov     x10, #10
 
-    // write(STDOUT_FD, x12, x15)
-    mov x1, x12
-    mov x2, x15
-    mov x0, #STDOUT_FD
-    mov x8, #SYS_write
-    svc #0
-    ret
+    udiv    x11, x9, x10
+    msub    x12, x11, x10, x9     // unidades
+    add     x12, x12, #'0'
+
+    mov     x9,  x11
+    udiv    x11, x9, x10
+    msub    x13, x11, x10, x9     // decenas
+    add     x13, x13, #'0'
+
+    add     x14, x11, #'0'        // centenas
+
+    strb    w14, [sp]
+    strb    w13, [sp, #1]
+    strb    w12, [sp, #2]
+
+    mov     x0, #STDOUT
+    mov     x1, sp
+    mov     x2, #3
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    add     sp, sp, #16
+
+    // -- " (aparece " ----------------------------------------
+    mov     x0, #STDOUT
+    adr     x1, msg_aparece
+    mov     x2, #(msg_aparece_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    // -- Convertir conteo (x21) → ASCII ----------------------
+    // División repetida: extrae dígitos en orden inverso,
+    // luego se invierten para imprimir correctamente.
+    // x25 se usa (no x19) para no pisar registros de fase 2.
+    sub     sp, sp, #16
+
+    mov     x9,  x21
+    mov     x10, #10
+    mov     x15, sp
+    mov     x25, #0
+
+count_digits_loop:
+    udiv    x11, x9, x10
+    msub    x12, x11, x10, x9     // dígito = x9 % 10
+    add     x12, x12, #'0'
+    strb    w12, [x15, x25]
+    add     x25, x25, #1
+    mov     x9,  x11
+    cmp     x9,  #0
+    bne     count_digits_loop
+
+    // Invertir dígitos
+    mov     x26, #0
+    sub     x27, x25, #1
+
+reverse_loop:
+    cmp     x26, x27
+    bge     reverse_done
+    ldrb    w11, [x15, x26]
+    ldrb    w12, [x15, x27]
+    strb    w12, [x15, x26]
+    strb    w11, [x15, x27]
+    add     x26, x26, #1
+    sub     x27, x27, #1
+    b       reverse_loop
+
+reverse_done:
+    mov     x0, #STDOUT
+    mov     x1, x15
+    mov     x2, x25
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    add     sp, sp, #16
+
+    // -- " veces)\n" -----------------------------------------
+    mov     x0, #STDOUT
+    adr     x1, msg_veces
+    mov     x2, #(msg_veces_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    // -- Footer ----------------------------------------------
+    mov     x0, #STDOUT
+    adr     x1, msg_footer
+    mov     x2, #(msg_footer_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    b       exit_ok
+
+
+// ------------------------------------------------------------
+// SIN DATOS VÁLIDOS
+// ------------------------------------------------------------
+
+print_none:
+    mov     x0, #STDOUT
+    adr     x1, msg_header
+    mov     x2, #(msg_header_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    mov     x0, #STDOUT
+    adr     x1, msg_none
+    mov     x2, #(msg_none_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    mov     x0, #STDOUT
+    adr     x1, msg_footer
+    mov     x2, #(msg_footer_len)
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+
+// ------------------------------------------------------------
+// SALIDA DEL PROCESO
+// ------------------------------------------------------------
+
+exit_ok:
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0
